@@ -1,204 +1,191 @@
 import { useState, useEffect, useCallback } from 'react';
-import Sidebar from './components/Sidebar';
-import KanbanColumn from './components/KanbanColumn';
-import LiveFeed from './components/LiveFeed';
-import NewTaskModal from './components/NewTaskModal';
-import { COLUMNS, INITIAL_TASKS, INITIAL_ACTIVITY } from './data/constants';
-import { useClaudeAgent } from './hooks/useClaudeAgent';
+import Sidebar from './components/shared/Sidebar';
+import LiveFeed from './components/shared/LiveFeed';
+import TasksPage from './components/pages/TasksPage';
+import AgentsPage from './components/pages/AgentsPage';
+import ContentPage from './components/pages/ContentPage';
+import ApprovalsPage from './components/pages/ApprovalsPage';
+import CouncilPage from './components/pages/CouncilPage';
+import PlaceholderPage from './components/pages/PlaceholderPage';
+import { useTasks, useAgents, useActivity, useContent, useApprovals, useCouncil } from './hooks/useSupabase';
+import { useClaude } from './hooks/useClaude';
 
-const API_KEY = process.env.REACT_APP_CLAUDE_API_KEY;
-
-const DEMO_ACTIONS = [
-  ["Scout",  "Scanning competitor intelligence feeds"],
-  ["Jarvis", "Re-prioritizing task queue by ROI impact"],
-  ["Quill",  "Drafting content brief for new campaign"],
-  ["Scout",  "Running performance audit on live assets"],
-  ["Jarvis", "Coordinating handoff between Scout and Quill"],
-  ["Quill",  "Synthesizing research into creative angles"],
-  ["Scout",  "Monitoring funnel metrics for anomalies"],
-  ["Jarvis", "Validating deliverables against HQ standards"],
+const DEMO_FEED = [
+  ["Scout","Scanning competitor intelligence feeds"],
+  ["Jarvis","Re-prioritizing task queue by ROI impact"],
+  ["Quill","Drafting content brief for new campaign"],
+  ["Scout","Running performance audit on live assets"],
+  ["Jarvis","Coordinating handoff between Scout and Quill"],
+  ["Quill","Synthesizing research into creative angles"],
 ];
 
 export default function App() {
-  const [activeNav, setActiveNav]   = useState('tasks');
-  const [tasks, setTasks]           = useState(INITIAL_TASKS);
-  const [activity, setActivity]     = useState(INITIAL_ACTIVITY);
-  const [dragging, setDragging]     = useState(null);
-  const [dragOver, setDragOver]     = useState(null);
-  const [showModal, setShowModal]   = useState(false);
-  const [nextId, setNextId]         = useState(100);
+  const [activeNav, setActiveNav] = useState('tasks');
+  const [chatMessages, setChatMessages] = useState({});
+  const [chatLoading, setChatLoading] = useState(false);
+  const [generateLoading, setGenerateLoading] = useState(false);
+  const [councilLoading, setCouncilLoading] = useState(false);
 
-  const { callJarvis, loading: jarvisLoading } = useClaudeAgent();
+  const { tasks, addTask, moveTask } = useTasks();
+  const { agents, updateAgent } = useAgents();
+  const { activity, logActivity } = useActivity();
+  const { content, addContent, updateContent } = useContent();
+  const { approvals, updateApproval, addApproval } = useApprovals();
+  const { sessions, activeSession, setActiveSession, createSession, addMessage } = useCouncil();
+  const { call, callJarvis, loading: claudeLoading } = useClaude();
 
-  // Push to activity feed
-  const pushActivity = useCallback((entry) => {
-    setActivity(prev => [{
-      id: Date.now(),
-      agent: entry.agent || 'Jarvis',
-      time: 'just now',
-      action: entry.action || entry.message?.slice(0, 80) || 'Working...',
-      priority: entry.priority || null,
-      deliverable: entry.deliverable || null,
-    }, ...prev.slice(0, 24)]);
-  }, []);
+  const pendingApprovals = approvals.filter(a=>a.status==='pending').length;
 
-  // Demo ticker when no API key
+  // Demo ticker
   useEffect(() => {
+    const API_KEY = process.env.REACT_APP_CLAUDE_API_KEY;
     if (API_KEY) return;
-    const interval = setInterval(() => {
-      const [agent, action] = DEMO_ACTIONS[Math.floor(Math.random() * DEMO_ACTIONS.length)];
-      pushActivity({ agent, action });
-    }, 6000);
-    return () => clearInterval(interval);
-  }, [pushActivity]);
+    const t = setInterval(()=>{
+      const [agent,action] = DEMO_FEED[Math.floor(Math.random()*DEMO_FEED.length)];
+      logActivity({ agent, action });
+    }, 7000);
+    return ()=>clearInterval(t);
+  }, [logActivity]);
 
-  // ── Computed stats ──────────────────────────────────────────────────────────
-  const allTasks   = Object.values(tasks).flat();
-  const inProgress = tasks['In Progress'].length;
-  const done       = tasks['Done'].length;
-  const completion = allTasks.length > 0 ? Math.round((done / allTasks.length) * 100) : 0;
-
-  // ── Drag & drop ─────────────────────────────────────────────────────────────
-  const handleDrop = (col) => {
-    if (!dragging) return;
-    setTasks(prev => {
-      const next = {};
-      for (const [k, v] of Object.entries(prev)) next[k] = v.filter(t => t.id !== dragging.id);
-      next[col] = [{ ...dragging, time: 'just now', highlighted: false }, ...next[col]];
-      return next;
-    });
-    pushActivity({ agent: dragging.agent, action: `Moved "${dragging.title}" → ${col}`, priority: null });
-    if (API_KEY) {
-      callJarvis(`Task "${dragging.title}" was moved to ${col}. Acknowledge and provide next action.`, pushActivity);
-    }
-    setDragging(null);
-    setDragOver(null);
-  };
-
-  // ── Add task ─────────────────────────────────────────────────────────────────
-  const handleAddTask = async ({ title, desc, agent, tag, askJarvis }) => {
-    const newTask = { id: nextId, title, desc, agent, tag, time: 'just now', highlighted: false };
-    setNextId(n => n + 1);
-    setTasks(prev => ({ ...prev, Backlog: [newTask, ...prev.Backlog] }));
-    pushActivity({ agent, action: `New task created: "${title}"`, priority: 'MEDIUM' });
+  // ── Task: add with optional Jarvis ──────────────────────────────────────────
+  const handleAddTask = useCallback(async ({ title, description, agent, tag, priority, askJarvis }) => {
+    await addTask({ title, description, agent, tag, priority });
+    logActivity({ agent, action:`New task created: "${title}"`, priority });
 
     if (askJarvis) {
-      const prompt = `New task added to Backlog:
+      const agentData = agents.find(a=>a.name==='Jarvis');
+      const prompt = `New task in Clawbot HQ:
 Title: "${title}"
-Deliverable: "${desc || 'Not specified'}"
-Assigned to: ${agent}
-Tag: ${tag}
-
-Acknowledge this task, assess its priority, and provide your orchestration plan.`;
-      await callJarvis(prompt, pushActivity);
+Deliverable: "${description||'Not specified'}"
+Assigned: ${agent} | Tag: ${tag} | Priority: ${priority}
+Assess priority, provide orchestration plan, and delegate if needed.`;
+      await callJarvis(prompt, agentData?.system_prompt, (res) => {
+        logActivity({ agent:'Jarvis', action:res.action||res.message?.slice(0,80), priority:res.priority, deliverable:res.deliverable });
+        if (res.delegatedTo) {
+          logActivity({ agent:res.delegatedTo, action:`Received delegation: "${title}"`, priority:res.priority });
+        }
+      });
     }
-  };
+  }, [addTask, logActivity, agents, callJarvis]);
 
-  // ── Styles ───────────────────────────────────────────────────────────────────
-  const s = {
-    app:     { display: 'flex', height: '100vh', width: '100vw', background: '#0B0D13', fontFamily: "'DM Sans', sans-serif", color: '#DDE1EE', overflow: 'hidden' },
-    main:    { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
-    content: { flex: 1, padding: '24px 26px', overflowY: 'auto' },
-    stats:   { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 26 },
-    statCard:{ background: '#11131C', border: '1px solid #1A1D26', borderRadius: 14, padding: '18px 20px', transition: 'border-color 0.15s' },
-  };
+  // ── Task: move with Jarvis notification ─────────────────────────────────────
+  const handleMoveTask = useCallback(async (task, newStatus) => {
+    await moveTask(task, newStatus);
+    logActivity({ agent:task.agent, action:`"${task.title}" → ${newStatus}` });
+    if (newStatus==='Done') {
+      const agentData = agents.find(a=>a.name==='Jarvis');
+      await callJarvis(`Task completed: "${task.title}". Acknowledge and identify next priority.`, agentData?.system_prompt, (res) => {
+        logActivity({ agent:'Jarvis', action:res.action||'Task completion acknowledged', priority:res.priority });
+      });
+    }
+  }, [moveTask, logActivity, agents, callJarvis]);
+
+  // ── Agent: chat ─────────────────────────────────────────────────────────────
+  const handleChatSend = useCallback(async (agent, userMessage) => {
+    setChatMessages(prev=>({ ...prev, [agent.name]: [...(prev[agent.name]||[]), {role:'user',content:userMessage}] }));
+    setChatLoading(true);
+    logActivity({ agent:agent.name, action:`User message received`, priority:'LOW' });
+
+    const response = await call(
+      agent.system_prompt || `You are ${agent.name}, ${agent.role} at Clawbot HQ.`,
+      [...(chatMessages[agent.name]||[]), {role:'user',content:userMessage}]
+    );
+    setChatMessages(prev=>({ ...prev, [agent.name]: [...(prev[agent.name]||[]), {role:'assistant',content:response}] }));
+    logActivity({ agent:agent.name, action:response.slice(0,80), priority:'LOW' });
+    setChatLoading(false);
+  }, [call, chatMessages, logActivity]);
+
+  // ── Agent: trigger manually ──────────────────────────────────────────────────
+  const handleTriggerAgent = useCallback(async (agent) => {
+    logActivity({ agent:agent.name, action:`Manual trigger activated`, priority:'MEDIUM' });
+    const response = await call(
+      agent.system_prompt || `You are ${agent.name}, ${agent.role} at Clawbot HQ.`,
+      [{ role:'user', content:`You have been manually triggered. Review current state and report your top priority action.` }]
+    );
+    logActivity({ agent:agent.name, action:response.slice(0,100), priority:'MEDIUM' });
+  }, [call, logActivity]);
+
+  // ── Content: generate ────────────────────────────────────────────────────────
+  const handleGenerateContent = useCallback(async ({ prompt, agent: agentName, type }) => {
+    setGenerateLoading(true);
+    const agentData = agents.find(a=>a.name===agentName);
+    logActivity({ agent:agentName, action:`Generating ${type}: "${prompt.slice(0,50)}..."`, priority:'MEDIUM' });
+
+    const response = await call(
+      agentData?.system_prompt || `You are ${agentName} at Clawbot HQ. Produce high-quality, production-ready content.`,
+      [{ role:'user', content:`${prompt}\n\nProduce the complete output. Be specific, detailed, and production-ready.` }]
+    );
+
+    const newItem = await addContent({
+      title: prompt.slice(0,60),
+      body: response,
+      agent: agentName,
+      type,
+      status: 'draft',
+    });
+
+    // Auto-create approval
+    await addApproval({ title: newItem.title, body: response, agent: agentName, content_id: newItem.id });
+    logActivity({ agent:agentName, action:`Content generated: "${newItem.title}"`, priority:'MEDIUM', deliverable:`${type} — sent to Approvals` });
+    setGenerateLoading(false);
+  }, [agents, call, addContent, addApproval, logActivity]);
+
+  // ── Council: multi-agent debate ──────────────────────────────────────────────
+  const handleCouncilDebate = useCallback(async (session, topic) => {
+    setCouncilLoading(true);
+    logActivity({ agent:'Jarvis', action:`Council session started: "${topic}"`, priority:'HIGH' });
+
+    const debaters = agents.filter(a=>a.status==='active').slice(0,4);
+    for (const agent of debaters) {
+      const response = await call(
+        agent.system_prompt || `You are ${agent.name} at Clawbot HQ.`,
+        [{ role:'user', content:`The Council is deliberating on: "${topic}"\n\nProvide your expert perspective from your role as ${agent.role}. Be concise (2-3 paragraphs), specific, and actionable. Consider what the other agents might say and add unique value from your specialty.` }]
+      );
+      const msg = { agent:agent.name, message:response, time:'just now' };
+      addMessage(session.id, msg);
+      logActivity({ agent:agent.name, action:`Council contribution on: "${topic}"`, priority:'HIGH' });
+      await new Promise(r=>setTimeout(r,500));
+    }
+
+    // Jarvis synthesis
+    const jarvisAgent = agents.find(a=>a.name==='Jarvis');
+    const synthesis = await call(
+      jarvisAgent?.system_prompt || `You are Jarvis, Chief Orchestrator of Clawbot HQ.`,
+      [{ role:'user', content:`As Jarvis, synthesize the council's deliberation on: "${topic}"\n\nProvide:\n1. Key consensus points\n2. Recommended action plan (prioritized)\n3. Who owns each action\n\nBe decisive and clear.` }]
+    );
+    addMessage(session.id, { agent:'Jarvis', message:`**SYNTHESIS & ACTION PLAN:**\n\n${synthesis}`, time:'just now' });
+    logActivity({ agent:'Jarvis', action:`Council synthesis complete: "${topic}"`, priority:'HIGH', deliverable:'Action plan issued' });
+    setCouncilLoading(false);
+  }, [agents, call, addMessage, logActivity]);
+
+  // ── Approval: update ─────────────────────────────────────────────────────────
+  const handleUpdateApproval = useCallback(async (id, status, notes) => {
+    await updateApproval(id, status, notes);
+    const item = approvals.find(a=>a.id===id);
+    logActivity({ agent:'Jarvis', action:`${status==='approved'?'✓ Approved':'✕ Rejected'}: "${item?.title}"`, priority:'HIGH' });
+    if (status==='approved' && item) {
+      await updateContent(item.content_id, { status:'published' });
+    }
+  }, [updateApproval, approvals, logActivity, updateContent]);
+
+  const pageStyle = { flex:1, display:'flex', flexDirection:'column', overflow:'hidden', background:'#0B0D13' };
 
   return (
-    <div style={s.app}>
-      <style>{`
-        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
-        @keyframes slideIn { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }
-      `}</style>
+    <div style={{ display:'flex', height:'100vh', width:'100vw', background:'#0B0D13', fontFamily:"'DM Sans',sans-serif", color:'#DDE1EE', overflow:'hidden' }}>
+      <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}`}</style>
 
-      {showModal && (
-        <NewTaskModal
-          onClose={() => setShowModal(false)}
-          onAdd={handleAddTask}
-          jarvisLoading={jarvisLoading}
-        />
-      )}
+      <Sidebar activeNav={activeNav} setActiveNav={setActiveNav} pendingApprovals={pendingApprovals} />
 
-      <Sidebar activeNav={activeNav} setActiveNav={setActiveNav} />
-
-      <div style={s.main}>
-        <div style={s.content}>
-
-          {/* KPI Stats */}
-          <div style={s.stats}>
-            {[
-              ['TASKS THIS WEEK', 28,           '+12%', true ],
-              ['IN PROGRESS',     inProgress,   null,   null ],
-              ['TOTAL TASKS',     allTasks.length, '+8%', true],
-              ['COMPLETION %',    `${completion}%`, '+3%', true],
-            ].map(([label, value, delta, pos]) => (
-              <div key={label} style={s.statCard}
-                onMouseEnter={e => e.currentTarget.style.borderColor = '#252830'}
-                onMouseLeave={e => e.currentTarget.style.borderColor = '#1A1D26'}>
-                <div style={{ fontSize: 10, fontWeight: 700, color: '#3D4A60', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 10 }}>
-                  {label}
-                </div>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                  <span style={{ fontSize: 30, fontWeight: 800, color: '#DDE1EE', fontFamily: "'JetBrains Mono', monospace" }}>
-                    {value}
-                  </span>
-                  {delta && (
-                    <span style={{ fontSize: 12, fontWeight: 700, color: pos ? '#22C55E' : '#EF4444' }}>
-                      {delta}
-                    </span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Board header */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-            <div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: '#DDE1EE' }}>Mission Board</div>
-              {!API_KEY && (
-                <div style={{ fontSize: 11, color: '#4F6EF7', marginTop: 3 }}>
-                  ⚡ Demo mode · Add <code style={{ fontFamily: "'JetBrains Mono', monospace", background: '#1A1D26', padding: '1px 5px', borderRadius: 4 }}>REACT_APP_CLAUDE_API_KEY</code> to .env to activate Jarvis
-                </div>
-              )}
-              {API_KEY && (
-                <div style={{ fontSize: 11, color: '#22C55E', marginTop: 3 }}>✓ Jarvis connected · Claude API active</div>
-              )}
-            </div>
-            <button
-              onClick={() => setShowModal(true)}
-              style={{
-                background: '#4F6EF7', border: 'none', borderRadius: 10,
-                padding: '9px 18px', color: '#fff', fontSize: 13, fontWeight: 700,
-                cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-                fontFamily: "'DM Sans', sans-serif", transition: 'all 0.15s',
-                boxShadow: '0 4px 14px #4F6EF744',
-              }}
-              onMouseEnter={e => { e.currentTarget.style.background = '#3D5CE5'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
-              onMouseLeave={e => { e.currentTarget.style.background = '#4F6EF7'; e.currentTarget.style.transform = 'translateY(0)'; }}
-            >
-              {jarvisLoading ? '⚡ Jarvis thinking...' : '+ New Task'}
-            </button>
-          </div>
-
-          {/* Kanban */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 16, alignItems: 'start' }}>
-            {COLUMNS.map(col => (
-              <KanbanColumn
-                key={col}
-                title={col}
-                tasks={tasks[col] || []}
-                onDragStart={setDragging}
-                onDrop={() => handleDrop(col)}
-                onDragOver={() => setDragOver(col)}
-                onDragLeave={() => setDragOver(null)}
-                isOver={dragOver === col}
-              />
-            ))}
-          </div>
-        </div>
+      <div style={pageStyle}>
+        {activeNav==='tasks'     && <TasksPage tasks={tasks} onAddTask={handleAddTask} onMoveTask={handleMoveTask} agents={agents} jarvisLoading={claudeLoading} />}
+        {activeNav==='agents'    && <AgentsPage agents={agents} onUpdateAgent={updateAgent} activity={activity} onTriggerAgent={handleTriggerAgent} chatMessages={chatMessages} onChatSend={handleChatSend} chatLoading={chatLoading} />}
+        {activeNav==='content'   && <ContentPage content={content} agents={agents} onUpdateContent={updateContent} onGenerateContent={handleGenerateContent} generateLoading={generateLoading} />}
+        {activeNav==='approvals' && <ApprovalsPage approvals={approvals} agents={agents} onUpdateApproval={handleUpdateApproval} />}
+        {activeNav==='council'   && <CouncilPage sessions={sessions} activeSession={activeSession} setActiveSession={setActiveSession} createSession={createSession} addMessage={addMessage} agents={agents} onCouncilDebate={handleCouncilDebate} councilLoading={councilLoading} />}
+        {['projects','memory','docs','team','pipeline','radar'].includes(activeNav) && <PlaceholderPage page={activeNav} />}
       </div>
 
-      <LiveFeed activity={activity} apiConnected={!!API_KEY} />
+      <LiveFeed activity={activity} agents={agents} />
     </div>
   );
 }
