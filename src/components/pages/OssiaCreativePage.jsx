@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useClaude } from '../../hooks/useClaude';
 
 const FORMATS = [
   { value:'carousel',     label:'Carousel' },
@@ -19,17 +20,61 @@ const lbl = {
   display:'block', textTransform:'uppercase', letterSpacing:'0.06em',
 };
 
+// ── Utility: strip markdown fences Claude sometimes wraps around JSON ──────────
+function stripJsonFences(text) {
+  return text
+    .replace(/^```json\s*/i, '')  // leading ```json
+    .replace(/^```\s*/i, '')      // leading ```
+    .replace(/\s*```$/i, '')      // trailing ```
+    .trim();
+}
+
+// ── Build the Claude prompt ───────────────────────────────────────────────────
+function buildConceptPrompt(form) {
+  return `Generate ${form.numConcepts} ${form.conceptType} ad concepts for this product.
+
+Product URL: ${form.productUrl}
+Ad Format: ${form.format}
+Extra Context: ${form.extraContext || 'None provided'}
+
+Respond with ONLY valid JSON — no markdown fences, no explanation, no text outside the JSON.
+Use exactly this structure:
+{
+  "concepts": [
+    {
+      "concept_number": 1,
+      "hook": "Scroll-stopping opening line",
+      "headline": "Main headline",
+      "body_copy": "Ad body copy (2-3 sentences)",
+      "cta": "Call to action text",
+      "visual_direction": "Description of visual / imagery"
+    }
+  ]
+}`;
+}
+
+const SYSTEM_PROMPT =
+  `You are an expert performance marketing creative strategist for DTC brands. ` +
+  `Generate ad concepts as valid JSON only. ` +
+  `Never use markdown fences. Never add commentary. ` +
+  `Your entire response must be a single valid JSON object starting with { and ending with }.`;
+
 export default function OssiaCreativePage() {
   const [form, setForm] = useState({
     productUrl:'', format:'carousel', conceptType:'Hook-Based', numConcepts:3, extraContext:'',
   });
-  const [status, setStatus]   = useState('idle'); // idle | generating | ready | error
-  const [errMsg, setErrMsg]   = useState('');
-  const [rawLog, setRawLog]   = useState(null);   // { url, payload, httpStatus, body, error }
+  const [status, setStatus]     = useState('idle'); // idle | generating | ready | error
+  const [errMsg, setErrMsg]     = useState('');
+  const [rawLog, setRawLog]     = useState(null);   // { url, payload, httpStatus, body, error }
   const [showDebug, setShowDebug] = useState(false);
+  const [concepts, setConcepts] = useState([]);     // parsed concept objects
+  const [parseError, setParseError] = useState('');
+
+  const { call } = useClaude();
 
   const WEBHOOK = process.env.REACT_APP_MAKE_WEBHOOK_URL;
   const NOTION  = process.env.REACT_APP_NOTION_AD_LIBRARY_URL;
+  const API_KEY = process.env.REACT_APP_CLAUDE_API_KEY;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -40,10 +85,38 @@ export default function OssiaCreativePage() {
       return;
     }
 
-    const payload = { ...form, timestamp: new Date().toISOString() };
-    const log = { url: WEBHOOK, payload, httpStatus: null, body: null, error: null };
+    setStatus('generating'); setErrMsg(''); setRawLog(null); setConcepts([]); setParseError('');
 
-    setStatus('generating'); setErrMsg(''); setRawLog(null);
+    // ── Step 1: Call Claude directly if API key is available ─────────────────
+    let parsedConcepts = null;
+    let claudeRaw = null;
+
+    if (API_KEY) {
+      try {
+        claudeRaw = await call(SYSTEM_PROMPT, [{ role:'user', content: buildConceptPrompt(form) }]);
+        const cleaned = stripJsonFences(claudeRaw);
+        const parsed = JSON.parse(cleaned);
+        parsedConcepts = parsed.concepts || [];
+        setConcepts(parsedConcepts);
+      } catch (parseErr) {
+        // Non-fatal: log parse failure but continue to fire webhook anyway
+        const msg = parseErr instanceof SyntaxError
+          ? `JSON parse failed: ${parseErr.message} — Claude may have returned malformed output`
+          : `Claude call failed: ${parseErr.message}`;
+        setParseError(msg);
+        // parsedConcepts stays null; we still fire the webhook below
+      }
+    }
+
+    // ── Step 2: Fire Make webhook with form data + pre-parsed concepts ────────
+    // Sending `concepts` pre-parsed means Make's JSON parse module becomes
+    // a simple passthrough — no risk of markdown fence corruption.
+    const payload = {
+      ...form,
+      timestamp: new Date().toISOString(),
+      ...(parsedConcepts ? { concepts: parsedConcepts } : {}),
+    };
+    const log = { url: WEBHOOK, payload, httpStatus: null, body: null, error: null };
 
     try {
       const res = await fetch(WEBHOOK, {
@@ -76,6 +149,8 @@ export default function OssiaCreativePage() {
     ? WEBHOOK.replace(/(hook\.[^/]+\/[^/]+\/)[^/]+/, '$1••••••••')
     : '(not set)';
 
+  const AGENT_COLORS = ['#7C6AF7','#22C55E','#F59E0B','#EC4899','#EF4444','#60A5FA'];
+
   return (
     <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
       {/* Header */}
@@ -83,13 +158,20 @@ export default function OssiaCreativePage() {
         <div style={{ width:36, height:36, borderRadius:10, background:'linear-gradient(135deg,#EC4899,#F59E0B)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:16 }}>🎨</div>
         <div>
           <div style={{ fontSize:16, fontWeight:700, color:'#DDE1EE' }}>Ossia Creative Engine</div>
-          <div style={{ fontSize:12, color:'#4A5270' }}>Generate ad concepts via Make automation</div>
+          <div style={{ fontSize:12, color:'#4A5270' }}>
+            {API_KEY ? 'Generates concepts via Claude → fires Make webhook' : 'Generate ad concepts via Make automation'}
+          </div>
         </div>
+        {API_KEY && (
+          <div style={{ marginLeft:'auto', background:'#0A1410', border:'1px solid #22C55E44', borderRadius:6, padding:'4px 10px', fontSize:11, color:'#22C55E', fontWeight:600 }}>
+            ⚡ Claude connected
+          </div>
+        )}
       </div>
 
       <div style={{ flex:1, overflowY:'auto', padding:'24px 28px', display:'flex', gap:24, flexWrap:'wrap' }}>
-        {/* Form */}
-        <div style={{ flex:'1 1 360px', maxWidth:520 }}>
+        {/* Left: form + status */}
+        <div style={{ flex:'1 1 360px', maxWidth:520, display:'flex', flexDirection:'column', gap:0 }}>
           <form onSubmit={handleSubmit} style={{ display:'flex', flexDirection:'column', gap:16 }}>
 
             <div>
@@ -129,19 +211,32 @@ export default function OssiaCreativePage() {
             <button type="submit" disabled={status==='generating'}
               style={{ background:status==='generating'?'#1A1D2E':'linear-gradient(135deg,#4F6EF7,#7B5CF6)', border:'1px solid transparent', borderRadius:8, color:status==='generating'?'#4A5270':'#DDE1EE', padding:'11px 20px', fontSize:13, fontWeight:600, cursor:status==='generating'?'not-allowed':'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:8, transition:'all 0.12s' }}>
               {status==='generating'
-                ? <><span style={{ display:'inline-block', width:12, height:12, border:'2px solid #4F6EF7', borderTopColor:'transparent', borderRadius:'50%', animation:'spin 0.7s linear infinite' }} />Firing webhook...</>
+                ? <><span style={{ display:'inline-block', width:12, height:12, border:'2px solid #4F6EF7', borderTopColor:'transparent', borderRadius:'50%', animation:'spin 0.7s linear infinite' }} />{API_KEY ? 'Generating concepts...' : 'Firing webhook...'}</>
                 : '⚡ Generate Concepts'}
             </button>
           </form>
 
-          {/* Status panels */}
+          {/* Parse error (non-fatal) */}
+          {parseError && (
+            <div style={{ marginTop:12, background:'#1A150A', border:'1px solid #F59E0B44', borderRadius:8, padding:'10px 14px' }}>
+              <div style={{ fontSize:12, fontWeight:600, color:'#F59E0B', marginBottom:3 }}>⚠ Client-side parse warning</div>
+              <div style={{ fontSize:11, color:'#8A7040', fontFamily:'monospace', whiteSpace:'pre-wrap' }}>{parseError}</div>
+              <div style={{ fontSize:11, color:'#6A5830', marginTop:6 }}>Webhook was still fired — Make will attempt its own parsing.</div>
+            </div>
+          )}
+
+          {/* Success */}
           {status==='ready' && (
             <div style={{ marginTop:16, background:'#0A1410', border:'1px solid #22C55E44', borderRadius:10, padding:'14px 16px' }}>
               <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
                 <span>✅</span>
-                <span style={{ fontSize:13, fontWeight:600, color:'#22C55E' }}>Webhook fired — Make received the request</span>
+                <span style={{ fontSize:13, fontWeight:600, color:'#22C55E' }}>
+                  {API_KEY ? `${concepts.length} concepts generated and sent to Make` : 'Webhook fired — Make received the request'}
+                </span>
               </div>
-              <div style={{ fontSize:12, color:'#4A5270', marginBottom:10 }}>Your concepts are generating in Make. View results in the Notion Ad Library.</div>
+              <div style={{ fontSize:12, color:'#4A5270', marginBottom:10 }}>
+                {API_KEY ? 'Concepts parsed client-side and delivered as clean JSON. View results in the Notion Ad Library.' : 'Your concepts are generating in Make. View results in the Notion Ad Library.'}
+              </div>
               {NOTION && (
                 <a href={NOTION} target="_blank" rel="noreferrer"
                   style={{ display:'inline-flex', alignItems:'center', gap:6, background:'#4F6EF720', border:'1px solid #4F6EF744', borderRadius:8, padding:'7px 14px', fontSize:12, color:'#7B8FFF', fontWeight:600, textDecoration:'none' }}>
@@ -150,6 +245,8 @@ export default function OssiaCreativePage() {
               )}
             </div>
           )}
+
+          {/* Error */}
           {status==='error' && (
             <div style={{ marginTop:16, background:'#1A0B0B', border:'1px solid #EF444444', borderRadius:10, padding:'14px 16px' }}>
               <div style={{ fontSize:13, fontWeight:600, color:'#EF4444', marginBottom:4 }}>⚠ Webhook Error</div>
@@ -157,7 +254,7 @@ export default function OssiaCreativePage() {
             </div>
           )}
 
-          {/* Raw Debug Log */}
+          {/* Raw debug log */}
           {rawLog && (
             <div style={{ marginTop:12 }}>
               <button onClick={()=>setShowDebug(v=>!v)}
@@ -208,11 +305,48 @@ export default function OssiaCreativePage() {
           )}
         </div>
 
-        {/* Info panel */}
-        <div style={{ width:210, flexShrink:0 }}>
+        {/* Right: concept cards + info panel */}
+        <div style={{ flex:'1 1 260px', minWidth:240, display:'flex', flexDirection:'column', gap:12 }}>
+
+          {/* Concept cards (shown when Claude key is set and concepts parsed) */}
+          {concepts.length > 0 && (
+            <div>
+              <div style={{ fontSize:12, fontWeight:700, color:'#DDE1EE', marginBottom:10, textTransform:'uppercase', letterSpacing:'0.06em' }}>
+                Generated Concepts
+              </div>
+              <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+                {concepts.map((c, i) => (
+                  <div key={i} style={{ background:'#0D0F17', border:`1px solid ${AGENT_COLORS[i % AGENT_COLORS.length]}33`, borderRadius:10, padding:'14px 16px' }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+                      <div style={{ width:22, height:22, borderRadius:6, background:`${AGENT_COLORS[i % AGENT_COLORS.length]}22`, border:`1px solid ${AGENT_COLORS[i % AGENT_COLORS.length]}55`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, color:AGENT_COLORS[i % AGENT_COLORS.length], fontWeight:700 }}>
+                        {c.concept_number || i+1}
+                      </div>
+                      <div style={{ fontSize:12, fontWeight:700, color:'#DDE1EE' }}>{c.headline || '—'}</div>
+                    </div>
+                    {[
+                      ['Hook', c.hook],
+                      ['Body', c.body_copy],
+                      ['CTA', c.cta],
+                      ['Visual', c.visual_direction],
+                    ].map(([k, v]) => v ? (
+                      <div key={k} style={{ marginBottom:6 }}>
+                        <div style={{ fontSize:10, color:'#3D4255', fontWeight:600, textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:2 }}>{k}</div>
+                        <div style={{ fontSize:12, color:'#9AA3BC', lineHeight:1.5 }}>{v}</div>
+                      </div>
+                    ) : null)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Info panel */}
           <div style={{ background:'#0D0F17', border:'1px solid #1A1D26', borderRadius:10, padding:'16px' }}>
             <div style={{ fontSize:12, fontWeight:700, color:'#DDE1EE', marginBottom:12 }}>How it works</div>
-            {[['1','Enter product URL & brief'],['2','Fires Make webhook'],['3','AI generates ad concepts'],['4','Drops into Notion Ad Library']].map(([n,t])=>(
+            {(API_KEY
+              ? [['1','Enter product URL & brief'],['2','Claude generates concepts client-side'],['3','JSON parsed & previewed here'],['4','Clean concepts sent to Make → Notion']]
+              : [['1','Enter product URL & brief'],['2','Fires Make webhook'],['3','AI generates ad concepts'],['4','Drops into Notion Ad Library']]
+            ).map(([n,t])=>(
               <div key={n} style={{ display:'flex', gap:8, alignItems:'flex-start', marginBottom:10 }}>
                 <div style={{ width:18, height:18, borderRadius:5, background:'#4F6EF720', border:'1px solid #4F6EF744', display:'flex', alignItems:'center', justifyContent:'center', fontSize:10, color:'#7B8FFF', fontWeight:700, flexShrink:0 }}>{n}</div>
                 <div style={{ fontSize:12, color:'#4A5270', lineHeight:1.5 }}>{t}</div>
@@ -220,15 +354,21 @@ export default function OssiaCreativePage() {
             ))}
           </div>
 
-          <div style={{ marginTop:10, background:'#0D0F17', border:'1px solid #1A1D26', borderRadius:8, padding:'10px 12px' }}>
+          <div style={{ background:'#0D0F17', border:'1px solid #1A1D26', borderRadius:8, padding:'10px 12px' }}>
             <div style={{ fontSize:10, color:'#3D4255', fontWeight:600, marginBottom:6, textTransform:'uppercase', letterSpacing:'0.06em' }}>Webhook URL</div>
             <div style={{ fontSize:10, color: WEBHOOK ? '#22C55E' : '#F59E0B', wordBreak:'break-all', lineHeight:1.5 }}>
               {WEBHOOK ? maskedUrl : '⚠ Not set'}
             </div>
           </div>
 
+          {!API_KEY && (
+            <div style={{ background:'#0D111A', border:'1px solid #4F6EF733', borderRadius:8, padding:'10px 12px', fontSize:11, color:'#4A5A80' }}>
+              💡 Add <code style={{ color:'#7B8FFF', background:'#0D1525', borderRadius:4, padding:'1px 5px' }}>REACT_APP_CLAUDE_API_KEY</code> to Vercel env to enable client-side concept generation with live previews and fence-proof JSON delivery.
+            </div>
+          )}
+
           {!NOTION && (
-            <div style={{ marginTop:8, background:'#1A130A', border:'1px solid #F59E0B33', borderRadius:8, padding:'10px 12px', fontSize:11, color:'#8A7040' }}>
+            <div style={{ background:'#1A130A', border:'1px solid #F59E0B33', borderRadius:8, padding:'10px 12px', fontSize:11, color:'#8A7040' }}>
               ⚠ Set <code style={{ color:'#F59E0B', background:'#2A1F08', borderRadius:4, padding:'1px 5px' }}>REACT_APP_NOTION_AD_LIBRARY_URL</code> for the library link
             </div>
           )}
