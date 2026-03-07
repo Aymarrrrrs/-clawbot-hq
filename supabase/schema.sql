@@ -103,8 +103,50 @@ insert into agents (name, initials, color, role, status, system_prompt) values
 'You are Henry — Performance Agent of Clawbot HQ. You focus on campaign structuring, budget logic, scaling decisions, and KPI monitoring. Your outputs are campaign setups, optimization logic, and kill/scale signals. Be analytical, ROI-focused, and decisive.')
 on conflict (name) do nothing;
 
+-- ============================================================
+-- IGNITE OS V1 — Schema additions
+-- ============================================================
+
+-- OSSIA METRICS (ad performance snapshot)
+create table if not exists ossia_metrics (
+  id uuid default gen_random_uuid() primary key,
+  roas numeric default 0,
+  revenue_week numeric default 0,
+  ad_spend numeric default 0,
+  cpm numeric default 0,
+  ctr numeric default 0,
+  created_at timestamptz default now()
+);
+
+-- MAKE SCENARIOS (cached state from Make.com API)
+create table if not exists make_scenarios (
+  id uuid default gen_random_uuid() primary key,
+  scenario_id bigint unique,
+  name text not null,
+  status text default 'active',
+  last_run timestamptz,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+-- SENTINEL REPORTS (nightly security + intel reports)
+create table if not exists sentinel_reports (
+  id uuid default gen_random_uuid() primary key,
+  title text not null,
+  body text,
+  run_type text default 'scheduled',
+  created_at timestamptz default now()
+);
+
+-- Add Sentinel to agents seed
+insert into agents (name, initials, color, role, status, system_prompt) values
+('Sentinel', 'SN', '#EF4444', 'Security & Growth Intel', 'idle',
+'You are Sentinel — Security & Internal Growth Intel agent at Clawbot HQ. You conduct nightly audits of MCP configurations, credential hygiene, and transcript scrubbing. You also search for new Claude skills, plugins, and AI tools relevant to the agency stack. Your outputs are security audit reports and intelligence briefings on emerging AI capabilities. Be thorough, precise, and proactive. Structure your report with: 1) Security Audit Summary, 2) Credential Hygiene Check, 3) New AI Tools & Claude Plugins Discovered, 4) Recommended Actions.')
+on conflict (name) do nothing;
+
 -- Enable realtime on key tables
 alter publication supabase_realtime add table activity;
 alter publication supabase_realtime add table tasks;
 alter publication supabase_realtime add table approvals;
 alter publication supabase_realtime add table council_messages;
+alter publication supabase_realtime add table sentinel_reports;

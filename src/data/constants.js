@@ -1,5 +1,5 @@
 export const AGENT_COLORS = {
-  Jarvis: '#7C6AF7', Scout: '#22C55E', Quill: '#F59E0B', Henry: '#EC4899',
+  Jarvis: '#7C6AF7', Scout: '#22C55E', Quill: '#F59E0B', Henry: '#EC4899', Sentinel: '#EF4444',
 };
 export const TAG_COLORS = {
   'Core Engine':'#3B5BDB','ML Research':'#6741D9','Infrastructure':'#1971C2',
@@ -8,17 +8,19 @@ export const TAG_COLORS = {
 };
 export const COLUMNS = ['Backlog','In Progress','Review','Done'];
 export const NAV_ITEMS = [
-  { icon:'⊞', label:'Tasks',     id:'tasks'     },
-  { icon:'◈', label:'Agents',    id:'agents'    },
-  { icon:'✦', label:'Content',   id:'content'   },
-  { icon:'✓', label:'Approvals', id:'approvals', badge:'approvals' },
-  { icon:'⬡', label:'Council',   id:'council'   },
-  { icon:'▣', label:'Projects',  id:'projects'  },
-  { icon:'◉', label:'Memory',    id:'memory'    },
-  { icon:'📄', label:'Docs',      id:'docs'      },
-  { icon:'👥', label:'Team',      id:'team'      },
-  { icon:'◎', label:'Pipeline',  id:'pipeline'  },
-  { icon:'📡', label:'Radar',     id:'radar'     },
+  { icon:'⊞', label:'Tasks',           id:'tasks'            },
+  { icon:'◈', label:'Agents',          id:'agents'           },
+  { icon:'✦', label:'Content',         id:'content'          },
+  { icon:'✓', label:'Approvals',       id:'approvals',        badge:'approvals' },
+  { icon:'⬡', label:'Council',         id:'council'          },
+  { icon:'◎', label:'Pipeline',        id:'pipeline'         },
+  { icon:'🎨', label:'Creative Engine', id:'creative-engine'  },
+  { icon:'📊', label:'Ossia',          id:'ossia'            },
+  { icon:'▣', label:'Projects',        id:'projects'         },
+  { icon:'◉', label:'Memory',          id:'memory'           },
+  { icon:'📄', label:'Docs',           id:'docs'             },
+  { icon:'👥', label:'Team',           id:'team'             },
+  { icon:'📡', label:'Radar',          id:'radar'            },
 ];
 export const PRIORITY_COLOR = { HIGH:'#EF4444', MEDIUM:'#F59E0B', LOW:'#22C55E' };
 export const STATUS_DOT = {

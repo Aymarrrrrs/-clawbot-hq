@@ -72,14 +72,16 @@ export function useTasks() {
 // ── Agents ───────────────────────────────────────────────────────────────────
 export function useAgents() {
   const DEFAULT = [
-    { id:'a1', name:'Jarvis', initials:'JV', color:'#7C6AF7', role:'Chief Orchestrator', status:'active', task_count:24,
+    { id:'a1', name:'Jarvis',   initials:'JV', color:'#7C6AF7', role:'Chief Orchestrator',    status:'active', task_count:24,
       system_prompt:'You are Jarvis — Chief Orchestrator of Clawbot HQ. You coordinate all agents, maintain system stability, prevent task conflicts, enforce deliverable standards, and prioritize strategic leverage. No task without deliverable. No execution without logic.' },
-    { id:'a2', name:'Scout',  initials:'SC', color:'#22C55E', role:'Intelligence Agent',  status:'active', task_count:18,
+    { id:'a2', name:'Scout',    initials:'SC', color:'#22C55E', role:'Intelligence Agent',     status:'active', task_count:18,
       system_prompt:'You are Scout — Intelligence Agent of Clawbot HQ. You focus on competitor research, market intelligence, performance monitoring, and data analysis. Your outputs are strategy reports, angle analysis, and actionable intelligence briefs.' },
-    { id:'a3', name:'Quill',  initials:'QL', color:'#F59E0B', role:'Creative Strategist', status:'active', task_count:15,
+    { id:'a3', name:'Quill',    initials:'QL', color:'#F59E0B', role:'Creative Strategist',    status:'active', task_count:15,
       system_prompt:'You are Quill — Creative Strategist of Clawbot HQ. You focus on hooks, emotional triggers, ad scripts, persuasion frameworks, and narrative structures. Your outputs are creative briefs, ad scripts, and content directions.' },
-    { id:'a4', name:'Henry',  initials:'HN', color:'#EC4899', role:'Performance Agent',   status:'idle',   task_count:9,
+    { id:'a4', name:'Henry',    initials:'HN', color:'#EC4899', role:'Performance Agent',      status:'idle',   task_count:9,
       system_prompt:'You are Henry — Performance Agent of Clawbot HQ. You focus on campaign structuring, budget logic, scaling decisions, and KPI monitoring. Your outputs are campaign setups, optimization logic, and kill/scale signals.' },
+    { id:'a5', name:'Sentinel', initials:'SN', color:'#EF4444', role:'Security & Growth Intel', status:'idle',  task_count:0,
+      system_prompt:'You are Sentinel — Security & Internal Growth Intel agent at Clawbot HQ. You conduct nightly audits of MCP configurations, credential hygiene, and transcript scrubbing. You also search for new Claude skills, plugins, and AI tools relevant to the agency stack. Your outputs are security audit reports and intelligence briefings on emerging AI capabilities. Be thorough, precise, and proactive. Structure your report with: 1) Security Audit Summary, 2) Credential Hygiene Check, 3) New AI Tools & Claude Plugins Discovered, 4) Recommended Actions.' },
   ];
   const [agents, setAgents] = useState(DEFAULT);
 
@@ -226,6 +228,103 @@ export function useAgentChat(agentName) {
   };
 
   return { messages, saveMessage };
+}
+
+// ── Ossia Metrics ─────────────────────────────────────────────────────────────
+export function useOssiaMetrics() {
+  const DEMO = { roas:4.2, revenue_week:12400, ad_spend:2950, cpm:8.40, ctr:2.1, updated_at:new Date().toISOString() };
+  const [metrics, setMetrics] = useState(DEMO);
+
+  useEffect(() => {
+    if (!isSupabaseReady) return;
+    supabase.from('ossia_metrics').select('*').order('created_at',{ascending:false}).limit(1)
+      .then(({data})=>{ if(data?.length) setMetrics({...data[0], updated_at:data[0].created_at}); });
+  }, []);
+
+  const saveMetrics = async (vals) => {
+    const row = { ...vals, updated_at:new Date().toISOString() };
+    setMetrics(row);
+    if (isSupabaseReady) await supabase.from('ossia_metrics').insert(vals);
+  };
+
+  return { metrics, saveMetrics };
+}
+
+// ── Make Scenarios ─────────────────────────────────────────────────────────────
+export function useMakeScenarios() {
+  const DEMO = [
+    { id:1, name:'Ossia Ad Creative Flow',  status:'active', last_run:new Date(Date.now()-3600000).toISOString() },
+    { id:2, name:'Content → Notion Sync',   status:'active', last_run:new Date(Date.now()-7200000).toISOString() },
+    { id:3, name:'Sentinel Nightly Audit',  status:'paused', last_run:new Date(Date.now()-86400000).toISOString() },
+  ];
+  const [scenarios, setScenarios] = useState(DEMO);
+  const [loading, setLoading] = useState(false);
+  const [triggering, setTriggering] = useState(null);
+
+  const fetchScenarios = useCallback(async () => {
+    const API_KEY = process.env.REACT_APP_MAKE_API_KEY;
+    const TEAM_ID = process.env.REACT_APP_MAKE_TEAM_ID;
+    const BASE = process.env.REACT_APP_MAKE_API_URL || 'https://us1.make.com/api/v2';
+    if (!API_KEY || !TEAM_ID) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`${BASE}/scenarios?teamId=${TEAM_ID}`, {
+        headers: { Authorization:`Token ${API_KEY}` },
+      });
+      const data = await res.json();
+      if (data?.scenarios) {
+        setScenarios(data.scenarios.map(s => ({
+          id: s.id,
+          name: s.name,
+          status: s.isActive ? 'active' : (s.isPaused ? 'paused' : 'error'),
+          last_run: s.lastExecution || null,
+        })));
+      }
+    } catch(e) { console.warn('Make API:', e.message); }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { fetchScenarios(); }, [fetchScenarios]);
+
+  const triggerScenario = async (id) => {
+    const API_KEY = process.env.REACT_APP_MAKE_API_KEY;
+    const BASE = process.env.REACT_APP_MAKE_API_URL || 'https://us1.make.com/api/v2';
+    if (!API_KEY) return;
+    setTriggering(id);
+    try {
+      await fetch(`${BASE}/scenarios/${id}/run`, {
+        method:'POST',
+        headers:{ Authorization:`Token ${API_KEY}`, 'Content-Type':'application/json' },
+      });
+      setScenarios(prev => prev.map(s => s.id===id ? {...s, last_run:new Date().toISOString()} : s));
+    } catch(e) { console.warn('Trigger error:', e.message); }
+    setTriggering(null);
+  };
+
+  return { scenarios, loading, triggering, fetchScenarios, triggerScenario };
+}
+
+// ── Sentinel Reports ───────────────────────────────────────────────────────────
+export function useSentinelReports() {
+  const [reports, setReports] = useState([]);
+
+  useEffect(() => {
+    if (!isSupabaseReady) return;
+    supabase.from('sentinel_reports').select('*').order('created_at',{ascending:false}).limit(10)
+      .then(({data})=>{ if(data?.length) setReports(data); });
+    const sub = supabase.channel('sentinel_reports').on('postgres_changes',{event:'INSERT',schema:'public',table:'sentinel_reports'},
+      ({new:row})=>setReports(prev=>[row,...prev.slice(0,9)])).subscribe();
+    return () => supabase.removeChannel(sub);
+  }, []);
+
+  const addReport = async (report) => {
+    const row = { id:Date.now().toString(), ...report, created_at:new Date().toISOString() };
+    setReports(prev=>[row,...prev.slice(0,9)]);
+    if (isSupabaseReady) await supabase.from('sentinel_reports').insert(report);
+    return row;
+  };
+
+  return { reports, addReport };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
