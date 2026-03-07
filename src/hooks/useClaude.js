@@ -12,6 +12,8 @@ export function useClaude() {
       return demo;
     }
     setLoading(true);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -21,6 +23,7 @@ export function useClaude() {
           'anthropic-version': '2023-06-01',
           'anthropic-dangerous-direct-browser-access': 'true',
         },
+        signal: controller.signal,
         body: JSON.stringify({
           model: 'claude-sonnet-4-5',
           max_tokens: 1024,
@@ -33,10 +36,11 @@ export function useClaude() {
       onChunk && onChunk(text);
       return text;
     } catch (e) {
-      const err = `Error: ${e.message}`;
+      const err = e.name === 'AbortError' ? 'Error: Request timed out after 30s' : `Error: ${e.message}`;
       onChunk && onChunk(err);
       return err;
     } finally {
+      clearTimeout(timeout);
       setLoading(false);
     }
   }, []);

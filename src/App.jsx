@@ -202,31 +202,56 @@ Assess priority, provide orchestration plan, and delegate if needed.`;
     setGenerateLoading(false);
   }, [agents, call, addContent, addApproval, logActivity]);
 
-  // ── Council: multi-agent debate ──────────────────────────────────────────────
-  const handleCouncilDebate = useCallback(async (session, topic) => {
+  // ── Council: user-driven multi-agent response ────────────────────────────────
+  const handleSendCouncilMessage = useCallback(async (sessionId, userMessage) => {
+    // Add user message immediately (React state is guaranteed ready by the time user types)
+    const userMsg = { agent:'You', message:userMessage, time:'just now', isUser:true };
+    addMessage(sessionId, userMsg);
     setCouncilLoading(true);
-    logActivity({ agent:'Jarvis', action:`Council session started: "${topic}"`, priority:'HIGH' });
 
-    const debaters = agents.filter(a=>a.status==='active').slice(0,4);
-    for (const agent of debaters) {
+    // Always include all 4 council agents by name (not filtered by status)
+    const COUNCIL_NAMES = ['Jarvis','Scout','Quill','Henry'];
+    const respondents = agents.filter(a => COUNCIL_NAMES.includes(a.name));
+
+    // Snapshot prior session messages for context
+    const session = sessions.find(s => s.id === sessionId);
+    const priorMessages = session?.messages || [];
+
+    const priorContext = priorMessages.length > 0
+      ? '\n\nPrior conversation:\n' + priorMessages.map(m =>
+          `${m.agent || 'You'}: ${m.message}`
+        ).join('\n\n')
+      : '';
+
+    const roundResponses = [];
+    for (const agent of respondents) {
+      // Include what other agents said earlier in this round
+      const roundContext = roundResponses.length > 0
+        ? '\n\nOther council members have already responded this round:\n' +
+          roundResponses.map(r => `${r.agent}: ${r.message}`).join('\n\n')
+        : '';
+
+      const prompt =
+        `Council topic: "${session?.topic || 'Discussion'}"` +
+        priorContext +
+        `\n\nUser's message to the Council: "${userMessage}"` +
+        roundContext +
+        `\n\nRespond in character as ${agent.name}. Be concise (2-3 paragraphs), specific, and true to your role.`;
+
       const response = await call(
-        agent.system_prompt || `You are ${agent.name} at Clawbot HQ.`,
-        [{ role:'user', content:`The Council is deliberating on: "${topic}"\n\nProvide your expert perspective from your role as ${agent.role}. Be concise (2-3 paragraphs), specific, and actionable.` }]
+        agent.system_prompt || `You are ${agent.name} at Clawbot HQ. Respond in character.`,
+        [{ role:'user', content:prompt }]
       );
-      addMessage(session.id, { agent:agent.name, message:response, time:'just now' });
-      logActivity({ agent:agent.name, action:`Council contribution on: "${topic}"`, priority:'HIGH' });
-      await new Promise(r=>setTimeout(r,500));
+
+      const agentMsg = { agent:agent.name, message:response, time:'just now' };
+      addMessage(sessionId, agentMsg);
+      roundResponses.push(agentMsg);
+      logActivity({ agent:agent.name, action:`Council: "${userMessage.slice(0,40)}"`, priority:'MEDIUM' });
+      await new Promise(r => setTimeout(r, 400));
     }
 
-    const jarvisAgent = agents.find(a=>a.name==='Jarvis');
-    const synthesis = await call(
-      jarvisAgent?.system_prompt || `You are Jarvis, Chief Orchestrator of Clawbot HQ.`,
-      [{ role:'user', content:`As Jarvis, synthesize the council's deliberation on: "${topic}"\n\nProvide:\n1. Key consensus points\n2. Recommended action plan (prioritized)\n3. Who owns each action\n\nBe decisive and clear.` }]
-    );
-    addMessage(session.id, { agent:'Jarvis', message:`**SYNTHESIS & ACTION PLAN:**\n\n${synthesis}`, time:'just now' });
-    logActivity({ agent:'Jarvis', action:`Council synthesis complete: "${topic}"`, priority:'HIGH', deliverable:'Action plan issued' });
     setCouncilLoading(false);
-  }, [agents, call, addMessage, logActivity]);
+  }, [agents, sessions, call, addMessage, logActivity]);
 
   // ── Approval: update ─────────────────────────────────────────────────────────
   const handleUpdateApproval = useCallback(async (id, status, notes) => {
@@ -252,7 +277,7 @@ Assess priority, provide orchestration plan, and delegate if needed.`;
         {activeNav==='agents'         && <AgentsPage agents={agents} onUpdateAgent={updateAgent} activity={activity} onTriggerAgent={handleTriggerAgent} chatMessages={chatMessages} onChatSend={handleChatSend} chatLoading={chatLoading} />}
         {activeNav==='content'        && <ContentPage content={content} agents={agents} onUpdateContent={updateContent} onGenerateContent={handleGenerateContent} generateLoading={generateLoading} />}
         {activeNav==='approvals'      && <ApprovalsPage approvals={approvals} agents={agents} onUpdateApproval={handleUpdateApproval} />}
-        {activeNav==='council'        && <CouncilPage sessions={sessions} activeSession={activeSession} setActiveSession={setActiveSession} createSession={createSession} addMessage={addMessage} agents={agents} onCouncilDebate={handleCouncilDebate} councilLoading={councilLoading} />}
+        {activeNav==='council'        && <CouncilPage sessions={sessions} activeSession={activeSession} setActiveSession={setActiveSession} createSession={createSession} agents={agents} onSendMessage={handleSendCouncilMessage} councilLoading={councilLoading} />}
         {activeNav==='pipeline'       && <PipelinePage />}
         {activeNav==='creative-engine'&& <OssiaCreativePage />}
         {activeNav==='ossia'          && <OssiaMetricsPage />}

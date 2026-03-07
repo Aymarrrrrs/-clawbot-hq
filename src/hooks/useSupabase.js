@@ -251,6 +251,14 @@ export function useOssiaMetrics() {
 }
 
 // ── Make Scenarios ─────────────────────────────────────────────────────────────
+function makeCorsMsg(e) {
+  const net = e.message === 'Failed to fetch' || e.message === 'Load failed' || e.message?.includes('NetworkError');
+  return net
+    ? 'CORS blocked — Make API cannot be called directly from the browser. ' +
+      'Set REACT_APP_MAKE_API_URL to a proxy, or use the Make dashboard to trigger scenarios.'
+    : e.message;
+}
+
 export function useMakeScenarios() {
   const DEMO = [
     { id:1, name:'Ossia Ad Creative Flow',  status:'active', last_run:new Date(Date.now()-3600000).toISOString() },
@@ -260,27 +268,36 @@ export function useMakeScenarios() {
   const [scenarios, setScenarios] = useState(DEMO);
   const [loading, setLoading] = useState(false);
   const [triggering, setTriggering] = useState(null);
+  const [fetchError, setFetchError] = useState(null);
+  const [triggerResults, setTriggerResults] = useState({}); // { [id]: {ok:bool, msg:string} }
 
   const fetchScenarios = useCallback(async () => {
     const API_KEY = process.env.REACT_APP_MAKE_API_KEY;
     const TEAM_ID = process.env.REACT_APP_MAKE_TEAM_ID;
-    const BASE = process.env.REACT_APP_MAKE_API_URL || 'https://us1.make.com/api/v2';
+    // Derive region from webhook URL if possible, default to us2
+    const BASE = process.env.REACT_APP_MAKE_API_URL || 'https://us2.make.com/api/v2';
     if (!API_KEY || !TEAM_ID) return;
-    setLoading(true);
+    setLoading(true); setFetchError(null);
     try {
       const res = await fetch(`${BASE}/scenarios?teamId=${TEAM_ID}`, {
         headers: { Authorization:`Token ${API_KEY}` },
       });
-      const data = await res.json();
-      if (data?.scenarios) {
+      let text = ''; try { text = await res.text(); } catch {}
+      if (!res.ok) { setFetchError(`HTTP ${res.status}: ${text.slice(0,200)}`); setLoading(false); return; }
+      let data; try { data = JSON.parse(text); } catch { setFetchError(`Non-JSON response: ${text.slice(0,100)}`); setLoading(false); return; }
+      if (data?.scenarios?.length) {
         setScenarios(data.scenarios.map(s => ({
           id: s.id,
           name: s.name,
           status: s.isActive ? 'active' : (s.isPaused ? 'paused' : 'error'),
           last_run: s.lastExecution || null,
         })));
+      } else {
+        setFetchError(`Unexpected response shape: ${JSON.stringify(data).slice(0,120)}`);
       }
-    } catch(e) { console.warn('Make API:', e.message); }
+    } catch(e) {
+      setFetchError(makeCorsMsg(e));
+    }
     setLoading(false);
   }, []);
 
@@ -288,20 +305,32 @@ export function useMakeScenarios() {
 
   const triggerScenario = async (id) => {
     const API_KEY = process.env.REACT_APP_MAKE_API_KEY;
-    const BASE = process.env.REACT_APP_MAKE_API_URL || 'https://us1.make.com/api/v2';
-    if (!API_KEY) return;
+    const BASE = process.env.REACT_APP_MAKE_API_URL || 'https://us2.make.com/api/v2';
+    if (!API_KEY) {
+      setTriggerResults(prev => ({ ...prev, [id]: { ok:false, msg:'REACT_APP_MAKE_API_KEY not set' } }));
+      return;
+    }
     setTriggering(id);
+    setTriggerResults(prev => ({ ...prev, [id]: null }));
     try {
-      await fetch(`${BASE}/scenarios/${id}/run`, {
+      const res = await fetch(`${BASE}/scenarios/${id}/run`, {
         method:'POST',
         headers:{ Authorization:`Token ${API_KEY}`, 'Content-Type':'application/json' },
       });
-      setScenarios(prev => prev.map(s => s.id===id ? {...s, last_run:new Date().toISOString()} : s));
-    } catch(e) { console.warn('Trigger error:', e.message); }
+      let body = ''; try { body = await res.text(); } catch {}
+      if (res.ok) {
+        setTriggerResults(prev => ({ ...prev, [id]: { ok:true, msg:`HTTP ${res.status} — ${body || 'Accepted'}` } }));
+        setScenarios(prev => prev.map(s => s.id===id ? {...s, last_run:new Date().toISOString()} : s));
+      } else {
+        setTriggerResults(prev => ({ ...prev, [id]: { ok:false, msg:`HTTP ${res.status}: ${body.slice(0,150)}` } }));
+      }
+    } catch(e) {
+      setTriggerResults(prev => ({ ...prev, [id]: { ok:false, msg:makeCorsMsg(e) } }));
+    }
     setTriggering(null);
   };
 
-  return { scenarios, loading, triggering, fetchScenarios, triggerScenario };
+  return { scenarios, loading, triggering, fetchError, triggerResults, fetchScenarios, triggerScenario };
 }
 
 // ── Sentinel Reports ───────────────────────────────────────────────────────────
