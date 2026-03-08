@@ -1,6 +1,14 @@
 import { useState } from 'react';
 import { useClaude } from '../../hooks/useClaude';
 
+// ── Google Service Account — Vertex AI / Imagen Bearer Token ──────────────────
+// ⚠  REACT_APP_* vars are bundled into the public JS. For shared deployments,
+//    move JWT signing to a Vercel Edge Function.
+const SA_CLIENT_EMAIL = 'make-imagen-automation@gen-lang-client-0070707113.iam.gserviceaccount.com';
+const SA_PRIVATE_KEY  = (process.env.REACT_APP_GOOGLE_SA_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+const SA_TOKEN_URI    = 'https://oauth2.googleapis.com/token';
+const IMAGEN_WEBHOOK  = 'https://hook.us2.make.com/3ftvqfu5vfq6340an58fhbx9z9odivm2';
+
 const FORMATS = [
   { value:'carousel',     label:'Carousel' },
   { value:'static',       label:'Static'   },
@@ -70,17 +78,70 @@ const CONCEPT_FIELDS = [
   { key:'audience_note',  label:'Audience Note'    },
 ];
 
+// ── JWT helpers — SubtleCrypto RS256 ─────────────────────────────────────────
+function b64url(str) {
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+function b64urlFromBytes(bytes) {
+  let s = '';
+  bytes.forEach(b => s += String.fromCharCode(b));
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+async function getVertexToken() {
+  const now     = Math.floor(Date.now() / 1000);
+  const header  = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+  const payload = b64url(JSON.stringify({
+    iss:   SA_CLIENT_EMAIL,
+    scope: 'https://www.googleapis.com/auth/cloud-platform',
+    aud:   SA_TOKEN_URI,
+    iat:   now,
+    exp:   now + 3600,
+  }));
+  const sigInput  = `${header}.${payload}`;
+  const pemBody   = SA_PRIVATE_KEY
+    .replace(/-----BEGIN PRIVATE KEY-----/, '')
+    .replace(/-----END PRIVATE KEY-----/, '')
+    .replace(/\s/g, '');
+  const binaryKey = Uint8Array.from(atob(pemBody), c => c.charCodeAt(0));
+  const cryptoKey = await crypto.subtle.importKey(
+    'pkcs8', binaryKey.buffer,
+    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+    false, ['sign']
+  );
+  const signature = await crypto.subtle.sign(
+    'RSASSA-PKCS1-v1_5', cryptoKey, new TextEncoder().encode(sigInput)
+  );
+  const jwt  = `${sigInput}.${b64urlFromBytes(new Uint8Array(signature))}`;
+  const resp = await fetch(SA_TOKEN_URI, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body:    `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`,
+  });
+  const data = await resp.json();
+  if (!data.access_token) throw new Error('Token exchange failed: ' + JSON.stringify(data));
+  return data.access_token;
+}
+
 export default function OssiaCreativePage() {
   const [form, setForm] = useState({
     brand:'', product:'',
     productUrl:'', format:'carousel', conceptType:'Hook-Based', numConcepts:3, extraContext:'',
   });
-  const [status, setStatus]       = useState('idle'); // idle | generating | ready | error
-  const [errMsg, setErrMsg]       = useState('');
-  const [rawLog, setRawLog]       = useState(null);
-  const [showDebug, setShowDebug] = useState(false);
-  const [concepts, setConcepts]   = useState([]);
+  const [status, setStatus]         = useState('idle'); // idle | generating | ready | error
+  const [errMsg, setErrMsg]         = useState('');
+  const [rawLog, setRawLog]         = useState(null);
+  const [showDebug, setShowDebug]   = useState(false);
+  const [concepts, setConcepts]     = useState([]);
   const [parseError, setParseError] = useState('');
+
+  // ── Enhance Agent state ───────────────────────────────────────────────────
+  const [brandGuidelines, setBrandGuidelines] = useState('');
+  const [enhanceStatus,   setEnhanceStatus]   = useState('idle'); // idle|enhancing|done|error
+  const [enhanceErr,      setEnhanceErr]      = useState('');
+
+  // ── Generate Images state ─────────────────────────────────────────────────
+  const [imageStatus, setImageStatus] = useState('idle'); // idle|token|triggering|done|error
+  const [imageMsg,    setImageMsg]    = useState('');
 
   const { call } = useClaude();
 
@@ -88,6 +149,7 @@ export default function OssiaCreativePage() {
   const NOTION  = process.env.REACT_APP_NOTION_AD_LIBRARY_URL;
   const API_KEY = process.env.REACT_APP_CLAUDE_API_KEY;
 
+  // ── Main submit ───────────────────────────────────────────────────────────
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!WEBHOOK) {
@@ -99,7 +161,7 @@ export default function OssiaCreativePage() {
 
     setStatus('generating'); setErrMsg(''); setRawLog(null); setConcepts([]); setParseError('');
 
-    // ── Step 1: Call Claude, strip fences, parse JSON ─────────────────────────
+    // Step 1: Call Claude, strip fences, parse JSON
     let parsedConcepts = null;
 
     if (API_KEY) {
@@ -108,8 +170,6 @@ export default function OssiaCreativePage() {
         const cleaned   = stripJsonFences(claudeRaw);
         const parsed    = JSON.parse(cleaned);
 
-        // Inject brand + product from form into every concept so Make/Notion
-        // receives them as first-class fields alongside Claude's output.
         parsedConcepts = (parsed.concepts || []).map(c => ({
           concept_name:    c.concept_name    || '',
           copy_angle:      c.copy_angle      || '',
@@ -127,22 +187,19 @@ export default function OssiaCreativePage() {
           ? `JSON parse failed: ${parseErr.message}`
           : `Claude call failed: ${parseErr.message}`;
         setParseError(msg);
-        // parsedConcepts stays null — webhook still fires below as fallback
       }
     }
 
-    // ── Step 2: Fire Make webhook ─────────────────────────────────────────────
-    // `concepts` array is pre-parsed and fully structured.
-    // Make Module 4 ({{1.concepts}}) receives clean objects — no parsing needed.
+    // Step 2: Fire Make webhook with pre-parsed concepts
     const payload = {
-      brand:       form.brand,
-      product:     form.product,
-      productUrl:  form.productUrl,
-      format:      form.format,
-      conceptType: form.conceptType,
-      numConcepts: form.numConcepts,
-      extraContext:form.extraContext,
-      timestamp:   new Date().toISOString(),
+      brand:        form.brand,
+      product:      form.product,
+      productUrl:   form.productUrl,
+      format:       form.format,
+      conceptType:  form.conceptType,
+      numConcepts:  form.numConcepts,
+      extraContext: form.extraContext,
+      timestamp:    new Date().toISOString(),
       ...(parsedConcepts ? { concepts: parsedConcepts } : {}),
     };
     const log = { url: WEBHOOK, payload, httpStatus: null, body: null, error: null };
@@ -174,11 +231,101 @@ export default function OssiaCreativePage() {
     }
   };
 
+  // ── Enhance with Agent ────────────────────────────────────────────────────
+  const handleEnhance = async () => {
+    if (!API_KEY || concepts.length === 0) return;
+    setEnhanceStatus('enhancing'); setEnhanceErr('');
+
+    const controller = new AbortController();
+    const timeout    = setTimeout(() => controller.abort(), 60000);
+
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type':      'application/json',
+          'x-api-key':         API_KEY,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({
+          model:      'claude-sonnet-4-20250514',
+          max_tokens: 4000,
+          system:
+            'You are the Ossia Creative Director. Review these ad concepts and enhance them ' +
+            'based on brand guidelines. Return ONLY a raw JSON array in the exact same shape ' +
+            'as the input — same fields, improved values. No fences, no preamble.',
+          messages: [{
+            role:    'user',
+            content: `Concepts to enhance:\n${JSON.stringify(concepts, null, 2)}` +
+                     (brandGuidelines ? `\n\nBrand Guidelines:\n${brandGuidelines}` : ''),
+          }],
+        }),
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Claude API ${res.status}${body ? ': ' + body.slice(0, 120) : ''}`);
+      }
+
+      const data     = await res.json();
+      const text     = data?.content?.[0]?.text || '';
+      const enhanced = JSON.parse(stripJsonFences(text));
+
+      if (!Array.isArray(enhanced)) throw new Error('Expected JSON array — got ' + typeof enhanced);
+      setConcepts(enhanced);
+      setEnhanceStatus('done');
+    } catch (err) {
+      setEnhanceErr(err.name === 'AbortError' ? 'Timed out after 60s' : err.message);
+      setEnhanceStatus('error');
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  // ── Generate Images → Drive (Make Flow 2) ────────────────────────────────
+  const handleGenerateImages = async () => {
+    if (concepts.length === 0) return;
+    setImageStatus('token'); setImageMsg('');
+
+    try {
+      const token = await getVertexToken();
+      setImageStatus('triggering');
+
+      const res = await fetch(IMAGEN_WEBHOOK, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          vertex_token: token,
+          concepts:     concepts,
+          brand:        form.brand,
+          product:      form.product,
+          card_count:   5,
+          triggered_at: new Date().toISOString(),
+        }),
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Webhook ${res.status}${body ? ': ' + body.slice(0, 120) : ''}`);
+      }
+
+      setImageStatus('done');
+      setImageMsg('✓ Flow 2 triggered — images generating in Drive');
+    } catch (err) {
+      setImageStatus('error');
+      setImageMsg(err.message);
+    }
+  };
+
   const maskedUrl = WEBHOOK
     ? WEBHOOK.replace(/(hook\.[^/]+\/[^/]+\/)[^/]+/, '$1••••••••')
     : '(not set)';
 
-  const ACCENT = ['#7C6AF7','#22C55E','#F59E0B','#EC4899','#EF4444','#60A5FA'];
+  const ACCENT  = ['#7C6AF7','#22C55E','#F59E0B','#EC4899','#EF4444','#60A5FA'];
+  const enhBusy = enhanceStatus === 'enhancing';
+  const imgBusy = imageStatus === 'token' || imageStatus === 'triggering';
 
   return (
     <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
@@ -205,7 +352,7 @@ export default function OssiaCreativePage() {
         <div style={{ flex:'1 1 360px', maxWidth:520, display:'flex', flexDirection:'column', gap:0 }}>
           <form onSubmit={handleSubmit} style={{ display:'flex', flexDirection:'column', gap:16 }}>
 
-            {/* Brand + Product — injected into every concept for Notion mapping */}
+            {/* Brand + Product */}
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
               <div>
                 <label style={lbl}>Brand Name</label>
@@ -261,6 +408,103 @@ export default function OssiaCreativePage() {
                 : '⚡ Generate Concepts'}
             </button>
           </form>
+
+          {/* ── Agent buttons — shown after concepts are generated ────────── */}
+          {concepts.length > 0 && (
+            <div style={{ display:'flex', flexDirection:'column', gap:10, marginTop:16 }}>
+
+              {/* Brand Guidelines textarea */}
+              <div>
+                <label style={lbl}>Brand Guidelines for Agent</label>
+                <textarea
+                  style={{...inp, resize:'vertical', minHeight:72}}
+                  placeholder="Tone of voice, brand values, colour palette, audience restrictions, words to avoid..."
+                  value={brandGuidelines}
+                  onChange={e => setBrandGuidelines(e.target.value)}
+                />
+              </div>
+
+              {/* Button row */}
+              <div style={{ display:'flex', gap:10 }}>
+
+                {/* Enhance with Agent (requires Claude API key) */}
+                {API_KEY && (
+                  <button
+                    type="button"
+                    onClick={handleEnhance}
+                    disabled={enhBusy}
+                    style={{
+                      flex:1,
+                      background:   '#1A1D2E',
+                      border:       `1px solid ${enhBusy ? '#2A2D3E' : '#4F6EF766'}`,
+                      borderRadius:  8,
+                      color:         enhBusy ? '#4A5270' : '#9AA3FF',
+                      padding:      '11px 14px',
+                      fontSize:      13,
+                      fontWeight:    600,
+                      cursor:        enhBusy ? 'not-allowed' : 'pointer',
+                      display:      'flex', alignItems:'center', justifyContent:'center', gap:8,
+                    }}
+                  >
+                    {enhBusy
+                      ? <><span style={{ display:'inline-block', width:12, height:12, border:'2px solid #4F6EF7', borderTopColor:'transparent', borderRadius:'50%', animation:'spin 0.7s linear infinite' }} />Enhancing...</>
+                      : '🧠 Enhance with Agent'}
+                  </button>
+                )}
+
+                {/* Generate Images → Drive */}
+                <button
+                  type="button"
+                  onClick={handleGenerateImages}
+                  disabled={imgBusy}
+                  style={{
+                    flex:1,
+                    background:   imgBusy ? '#1A1D2E' : 'linear-gradient(135deg,#EC4899,#F59E0B)',
+                    border:       '1px solid transparent',
+                    borderRadius:  8,
+                    color:         imgBusy ? '#4A5270' : '#DDE1EE',
+                    padding:      '11px 14px',
+                    fontSize:      13,
+                    fontWeight:    600,
+                    cursor:        imgBusy ? 'not-allowed' : 'pointer',
+                    display:      'flex', alignItems:'center', justifyContent:'center', gap:8,
+                  }}
+                >
+                  {imageStatus === 'token'
+                    ? <><span style={{ display:'inline-block', width:12, height:12, border:'2px solid #F59E0B', borderTopColor:'transparent', borderRadius:'50%', animation:'spin 0.7s linear infinite' }} />Generating token...</>
+                    : imageStatus === 'triggering'
+                    ? <><span style={{ display:'inline-block', width:12, height:12, border:'2px solid #EC4899', borderTopColor:'transparent', borderRadius:'50%', animation:'spin 0.7s linear infinite' }} />Triggering Flow 2...</>
+                    : '🖼️ Generate Images → Drive'}
+                </button>
+              </div>
+
+              {/* Enhance status */}
+              {enhanceStatus === 'done' && (
+                <div style={{ background:'#0A1410', border:'1px solid #22C55E44', borderRadius:8, padding:'10px 14px', fontSize:12, color:'#22C55E' }}>
+                  ✓ Concepts enhanced by Creative Director agent
+                </div>
+              )}
+              {enhanceStatus === 'error' && enhanceErr && (
+                <div style={{ background:'#1A0B0B', border:'1px solid #EF444444', borderRadius:8, padding:'10px 14px', fontSize:12, color:'#EF4444' }}>
+                  ⚠ Enhance error: {enhanceErr}
+                </div>
+              )}
+
+              {/* Image generation status */}
+              {(imageStatus === 'done' || imageStatus === 'error') && imageMsg && (
+                <div style={{
+                  background:   imageStatus === 'done' ? '#0A1410' : '#1A0B0B',
+                  border:      `1px solid ${imageStatus === 'done' ? '#22C55E44' : '#EF444444'}`,
+                  borderRadius:  8,
+                  padding:      '10px 14px',
+                  fontSize:      12,
+                  color:         imageStatus === 'done' ? '#22C55E' : '#EF4444',
+                }}>
+                  {imageMsg}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Parse warning (non-fatal) */}
           {parseError && (
@@ -395,7 +639,7 @@ export default function OssiaCreativePage() {
                       {/* Brand/product metadata */}
                       {(c.brand || c.product) && (
                         <div style={{ marginTop:8, paddingTop:8, borderTop:`1px solid ${color}22`, display:'flex', gap:12 }}>
-                          {c.brand  && <div style={{ fontSize:10, color:'#3D4255' }}>Brand: <span style={{ color:'#6A7290' }}>{c.brand}</span></div>}
+                          {c.brand   && <div style={{ fontSize:10, color:'#3D4255' }}>Brand: <span style={{ color:'#6A7290' }}>{c.brand}</span></div>}
                           {c.product && <div style={{ fontSize:10, color:'#3D4255' }}>Product: <span style={{ color:'#6A7290' }}>{c.product}</span></div>}
                         </div>
                       )}
