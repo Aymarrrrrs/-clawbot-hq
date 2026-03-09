@@ -15,11 +15,12 @@ const STATUS_COLOR = { active:'#22C55E', error:'#EF4444', paused:'#F59E0B' };
 const STATUS_LABEL = { active:'Active', error:'Error', paused:'Paused' };
 
 export default function PipelinePage() {
-  const { scenarios, loading, triggering, fetchError, triggerResults, fetchScenarios, triggerScenario } = useMakeScenarios();
+  const { scenarios, loading, triggering, fetchError, triggerResults, execStatuses, fetchScenarios, triggerScenario } = useMakeScenarios();
   const hasMakeKey = !!process.env.REACT_APP_MAKE_API_KEY;
 
   return (
     <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       {/* Header */}
       <div style={{ padding:'22px 28px 18px', borderBottom:'1px solid #1A1D26', display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:10 }}>
         <div style={{ display:'flex', alignItems:'center', gap:12 }}>
@@ -96,6 +97,42 @@ export default function PipelinePage() {
                     <div style={{ fontSize:11, fontFamily:'monospace', color: result.ok ? '#5A8A6A' : '#C08080', wordBreak:'break-all' }}>{result.msg}</div>
                   </div>
                 )}
+
+                {/* Execution status — polling / success / error / timeout */}
+                {execStatuses[s.id] && (() => {
+                  const ex = execStatuses[s.id];
+                  return (
+                    <div style={{ marginTop: result ? 6 : 10, padding:'9px 12px', borderRadius:6, background:'#0B0D16', border:'1px solid #252835' }}>
+                      {ex.phase === 'polling' && (
+                        <div style={{ display:'flex', alignItems:'center', gap:8, fontSize:11, color:'#7A8299' }}>
+                          <span style={{ display:'inline-block', width:10, height:10, border:'2px solid #4F6EF7', borderTopColor:'transparent', borderRadius:'50%', animation:'spin 0.7s linear infinite', flexShrink:0 }} />
+                          <span style={{ color:'#DDE1EE', fontWeight:600, textTransform:'capitalize' }}>{ex.status || 'running'}</span>
+                          <span>— polling execution status…</span>
+                        </div>
+                      )}
+                      {ex.phase === 'success' && (
+                        <div style={{ fontSize:11, color:'#22C55E', fontWeight:600 }}>
+                          ✅ Completed successfully{ex.executionTime != null ? ` — ${(ex.executionTime / 1000).toFixed(2)}s` : ''}
+                        </div>
+                      )}
+                      {ex.phase === 'timeout' && (
+                        <div style={{ fontSize:11, color:'#F59E0B', fontWeight:600 }}>
+                          ⏱ Polling timed out after 60s — check Make dashboard for final status
+                        </div>
+                      )}
+                      {ex.phase === 'error' && (
+                        <div>
+                          <div style={{ fontSize:11, color:'#EF4444', fontWeight:600, marginBottom: ex.error ? 4 : 0 }}>
+                            ✕ Execution failed{ex.module != null ? ` at Module ${ex.module}` : ''}
+                          </div>
+                          {ex.error && (
+                            <div style={{ fontSize:11, fontFamily:'monospace', color:'#C08080', wordBreak:'break-all' }}>{ex.error}</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             );
           })}

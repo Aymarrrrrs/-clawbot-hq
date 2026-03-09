@@ -251,6 +251,13 @@ export function useOssiaMetrics() {
 }
 
 // ── Make Scenarios ─────────────────────────────────────────────────────────────
+// Extract the path segment after /api/v2/ from a full Make status URL
+// e.g. https://us2.make.com/api/v2/executions/abc → "executions/abc"
+function extractMakePath(url) {
+  try { return new URL(url).pathname.replace(/^\/api\/v2\//, ''); }
+  catch { return null; }
+}
+
 function makeCorsMsg(e) {
   const net = e.message === 'Failed to fetch' || e.message === 'Load failed' || e.message?.includes('NetworkError');
   return net
@@ -269,6 +276,7 @@ export function useMakeScenarios() {
   const [triggering, setTriggering] = useState(null);
   const [fetchError, setFetchError] = useState(null);
   const [triggerResults, setTriggerResults] = useState({}); // { [id]: {ok:bool, msg:string} }
+  const [execStatuses, setExecStatuses] = useState({});    // { [id]: {phase, status?, executionTime?, error?, module?} }
 
   const fetchScenarios = useCallback(async () => {
     const API_KEY = process.env.REACT_APP_MAKE_API_KEY;
@@ -301,6 +309,48 @@ export function useMakeScenarios() {
 
   useEffect(() => { fetchScenarios(); }, [fetchScenarios]);
 
+  // Poll execution status every 3s for up to 60s after a successful trigger
+  const pollExecution = useCallback((scenarioId, statusUrl) => {
+    const path = extractMakePath(statusUrl);
+    if (!path) return;
+    const BASE = process.env.REACT_APP_MAKE_API_URL || '/api/make-proxy';
+    const deadline = Date.now() + 60000;
+
+    setExecStatuses(prev => ({ ...prev, [scenarioId]: { phase:'polling', status:'running' } }));
+
+    const tick = async () => {
+      if (Date.now() >= deadline) {
+        setExecStatuses(prev => ({ ...prev, [scenarioId]: { phase:'timeout' } }));
+        return;
+      }
+      try {
+        const res = await fetch(`${BASE}?path=${encodeURIComponent(path)}`);
+        const data = await res.json().catch(() => ({}));
+        // Make returns { execution: {...} } or the object directly
+        const exec = data?.execution ?? data;
+        const status = exec?.status;
+
+        if (status === 'success') {
+          setExecStatuses(prev => ({ ...prev, [scenarioId]: { phase:'success', executionTime: exec.executionTime ?? null } }));
+        } else if (status === 'error') {
+          setExecStatuses(prev => ({ ...prev, [scenarioId]: {
+            phase:'error',
+            error: exec.error?.message || exec.reason || 'Execution failed',
+            module: exec.error?.module ?? null,
+          }}));
+        } else {
+          // running / waiting — update label and schedule next tick
+          setExecStatuses(prev => ({ ...prev, [scenarioId]: { phase:'polling', status: status || 'running' } }));
+          setTimeout(tick, 3000);
+        }
+      } catch(e) {
+        setExecStatuses(prev => ({ ...prev, [scenarioId]: { phase:'error', error: e.message } }));
+      }
+    };
+
+    setTimeout(tick, 3000); // first check 3s after trigger
+  }, []);
+
   const triggerScenario = async (id) => {
     const API_KEY = process.env.REACT_APP_MAKE_API_KEY;
     const BASE = process.env.REACT_APP_MAKE_API_URL || '/api/make-proxy';
@@ -311,10 +361,15 @@ export function useMakeScenarios() {
         method:'POST',
         headers:{ Authorization:`Token ${API_KEY}`, 'Content-Type':'application/json' },
       });
-      let body = ''; try { body = await res.text(); } catch {}
+      let body = ''; let parsed = null;
+      try { body = await res.text(); } catch {}
+      try { parsed = JSON.parse(body); } catch {}
       if (res.ok) {
-        setTriggerResults(prev => ({ ...prev, [id]: { ok:true, msg:`HTTP ${res.status} — ${body || 'Accepted'}` } }));
+        const statusUrl = parsed?.statusUrl || null;
+        setTriggerResults(prev => ({ ...prev, [id]: { ok:true, msg:`HTTP ${res.status} — ${parsed?.status || body || 'Accepted'}` } }));
+        setExecStatuses(prev => ({ ...prev, [id]: null })); // clear any previous exec status
         setScenarios(prev => prev.map(s => s.id===id ? {...s, last_run:new Date().toISOString()} : s));
+        if (statusUrl) pollExecution(id, statusUrl);
       } else {
         setTriggerResults(prev => ({ ...prev, [id]: { ok:false, msg:`HTTP ${res.status}: ${body.slice(0,150)}` } }));
       }
@@ -324,7 +379,7 @@ export function useMakeScenarios() {
     setTriggering(null);
   };
 
-  return { scenarios, loading, triggering, fetchError, triggerResults, fetchScenarios, triggerScenario };
+  return { scenarios, loading, triggering, fetchError, triggerResults, execStatuses, fetchScenarios, triggerScenario };
 }
 
 // ── Sentinel Reports ───────────────────────────────────────────────────────────
