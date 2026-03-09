@@ -254,8 +254,7 @@ export function useOssiaMetrics() {
 function makeCorsMsg(e) {
   const net = e.message === 'Failed to fetch' || e.message === 'Load failed' || e.message?.includes('NetworkError');
   return net
-    ? 'CORS blocked — Make API cannot be called directly from the browser. ' +
-      'Set REACT_APP_MAKE_API_URL to a proxy, or use the Make dashboard to trigger scenarios.'
+    ? 'Network error reaching /api/make-proxy. Check that MAKE_API_KEY is set in Vercel env vars and redeploy.'
     : e.message;
 }
 
@@ -274,12 +273,11 @@ export function useMakeScenarios() {
   const fetchScenarios = useCallback(async () => {
     const API_KEY = process.env.REACT_APP_MAKE_API_KEY;
     const TEAM_ID = process.env.REACT_APP_MAKE_TEAM_ID;
-    // Derive region from webhook URL if possible, default to us2
-    const BASE = process.env.REACT_APP_MAKE_API_URL || 'https://us2.make.com/api/v2';
-    if (!API_KEY || !TEAM_ID) return;
+    const BASE = process.env.REACT_APP_MAKE_API_URL || '/api/make-proxy';
+    if (!TEAM_ID) return;
     setLoading(true); setFetchError(null);
     try {
-      const res = await fetch(`${BASE}/scenarios?teamId=${TEAM_ID}`, {
+      const res = await fetch(`${BASE}?path=${encodeURIComponent('scenarios?teamId=' + TEAM_ID)}`, {
         headers: { Authorization:`Token ${API_KEY}` },
       });
       let text = ''; try { text = await res.text(); } catch {}
@@ -305,15 +303,11 @@ export function useMakeScenarios() {
 
   const triggerScenario = async (id) => {
     const API_KEY = process.env.REACT_APP_MAKE_API_KEY;
-    const BASE = process.env.REACT_APP_MAKE_API_URL || 'https://us2.make.com/api/v2';
-    if (!API_KEY) {
-      setTriggerResults(prev => ({ ...prev, [id]: { ok:false, msg:'REACT_APP_MAKE_API_KEY not set' } }));
-      return;
-    }
+    const BASE = process.env.REACT_APP_MAKE_API_URL || '/api/make-proxy';
     setTriggering(id);
     setTriggerResults(prev => ({ ...prev, [id]: null }));
     try {
-      const res = await fetch(`${BASE}/scenarios/${id}/run`, {
+      const res = await fetch(`${BASE}?path=${encodeURIComponent('scenarios/' + id + '/run')}`, {
         method:'POST',
         headers:{ Authorization:`Token ${API_KEY}`, 'Content-Type':'application/json' },
       });

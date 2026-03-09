@@ -43,7 +43,7 @@ export default function PipelinePage() {
         {/* Env warning */}
         {!hasMakeKey && (
           <div style={{ background:'#1A130A', border:'1px solid #F59E0B33', borderRadius:8, padding:'10px 14px', fontSize:12, color:'#8A7040', marginBottom:16, lineHeight:1.6 }}>
-            ⚠ Connect Make.com by setting <code style={{ color:'#F59E0B', background:'#2A1F08', borderRadius:3, padding:'1px 5px' }}>REACT_APP_MAKE_API_KEY</code> and <code style={{ color:'#F59E0B', background:'#2A1F08', borderRadius:3, padding:'1px 5px' }}>REACT_APP_MAKE_TEAM_ID</code> in Vercel env vars. Showing demo data.
+            ⚠ Connect Make.com by setting <code style={{ color:'#F59E0B', background:'#2A1F08', borderRadius:3, padding:'1px 5px' }}>MAKE_API_KEY</code> (server-side) and <code style={{ color:'#F59E0B', background:'#2A1F08', borderRadius:3, padding:'1px 5px' }}>REACT_APP_MAKE_TEAM_ID</code> in Vercel env vars. Showing demo data.
           </div>
         )}
 
@@ -52,10 +52,10 @@ export default function PipelinePage() {
           <div style={{ background:'#1A0B0B', border:'1px solid #EF444433', borderRadius:8, padding:'12px 14px', fontSize:12, color:'#C08080', marginBottom:16, lineHeight:1.6 }}>
             <div style={{ fontWeight:700, color:'#EF4444', marginBottom:4 }}>⚠ Could not load scenarios from Make API</div>
             <div style={{ fontFamily:'monospace', fontSize:11, color:'#EF7777', wordBreak:'break-all' }}>{fetchError}</div>
-            {fetchError.includes('CORS') && (
+            {(fetchError.includes('CORS') || fetchError.includes('make-proxy')) && (
               <div style={{ marginTop:8, color:'#8A6040', fontSize:11 }}>
-                💡 Make's API does not allow direct browser requests. The scenarios below are demo data.
-                To fix: route requests through a backend proxy and set <code style={{ color:'#F59E0B', background:'#2A1F08', borderRadius:3, padding:'1px 4px' }}>REACT_APP_MAKE_API_URL</code> to your proxy URL.
+                💡 Requests route through <code style={{ color:'#F59E0B', background:'#2A1F08', borderRadius:3, padding:'1px 4px' }}>/api/make-proxy</code>.
+                Ensure <code style={{ color:'#F59E0B', background:'#2A1F08', borderRadius:3, padding:'1px 4px' }}>MAKE_API_KEY</code> (no REACT_APP_ prefix) is set in Vercel and redeploy.
               </div>
             )}
           </div>
