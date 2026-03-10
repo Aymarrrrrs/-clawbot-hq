@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 
-// SHA-256(REACT_APP_DAILY_SALT + '\n' + YYYY-MM-DD) → hex → first 8 chars
+// SHA-256(REACT_APP_DAILY_SALT + '\n' + YYYY-MM-DD) → full 64-char hex
 async function getDailyCode() {
   const salt = process.env.REACT_APP_DAILY_SALT || '';
   const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD local-ish (UTC)
@@ -9,7 +9,7 @@ async function getDailyCode() {
   const hex  = Array.from(new Uint8Array(buf))
     .map(b => b.toString(16).padStart(2, '0'))
     .join('');
-  return hex.slice(0, 8);
+  return hex;
 }
 
 export default function PasswordGate({ onUnlock }) {
@@ -95,7 +95,8 @@ export default function PasswordGate({ onUnlock }) {
             type="password"
             value={input}
             onChange={e => { setInput(e.target.value); setError(''); }}
-            placeholder="••••••••"
+            placeholder="Enter access code"
+            maxLength={64}
             autoComplete="off"
             spellCheck="false"
             style={{
