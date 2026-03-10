@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 
-// SHA-256(REACT_APP_DAILY_SALT + '\n' + YYYY-MM-DD) → full 64-char hex
+// SHA-256(REACT_APP_DAILY_SALT + YYYY-MM-DD) → full 64-char hex
 async function getDailyCode() {
   const salt = process.env.REACT_APP_DAILY_SALT || '';
   const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD local-ish (UTC)
-  const raw  = salt + '\n' + date;
+  const raw  = salt + date;
   console.log('Salt:', salt);
   console.log('Date:', date);
   console.log('Raw string being hashed:', raw);
