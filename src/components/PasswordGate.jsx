@@ -29,7 +29,10 @@ export default function PasswordGate({ onUnlock }) {
 
     const expected = await getDailyCode();
 
-    if (input.trim() === expected) {
+    console.log('Input:',    input.trim());
+    console.log('Expected:', expected.trim());
+
+    if (input.trim() === expected.trim()) {
       onUnlock();
     } else {
       setError('Invalid password');
@@ -39,7 +42,7 @@ export default function PasswordGate({ onUnlock }) {
       // Re-focus after shake so user can type immediately
       setTimeout(() => inputRef.current?.focus(), 640);
     }
-    if (input.trim() === expected) setChecking(false);
+    if (input.trim() === expected.trim()) setChecking(false);
   };
 
   return (
