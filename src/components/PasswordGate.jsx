@@ -5,6 +5,9 @@ async function getDailyCode() {
   const salt = process.env.REACT_APP_DAILY_SALT || '';
   const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD local-ish (UTC)
   const raw  = salt + '\n' + date;
+  console.log('Salt:', salt);
+  console.log('Date:', date);
+  console.log('Raw string being hashed:', raw);
   const buf  = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw));
   const hex  = Array.from(new Uint8Array(buf))
     .map(b => b.toString(16).padStart(2, '0'))
