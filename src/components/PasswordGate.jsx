@@ -134,6 +134,22 @@ export default function PasswordGate({ onUnlock }) {
             {error || ' '}
           </div>
 
+          {/* Dev shortcut — click to reveal today's code */}
+          <button
+            type="button"
+            onClick={async () => { const code = await getDailyCode(); alert('Today\'s code:\n\n' + code); }}
+            style={{
+              background: 'none', border: 'none', padding: 0,
+              color: '#2A2D3E', fontSize: 11, cursor: 'pointer',
+              textDecoration: 'underline', textAlign: 'center',
+              transition: 'color 0.15s',
+            }}
+            onMouseEnter={e => e.currentTarget.style.color = '#4A5270'}
+            onMouseLeave={e => e.currentTarget.style.color = '#2A2D3E'}
+          >
+            Get today's code
+          </button>
+
           <button
             type="submit"
             disabled={checking || !input}
